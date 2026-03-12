@@ -2,17 +2,32 @@ import { useState } from "react";
 import axios from "axios";
 
 function App() {
-  const [url, setUrl] = useState("");
+  const [urls, setUrls] = useState([""]); // start with one input
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
 
+  const handleUrlChange = (index, value) => {
+    const newUrls = [...urls];
+    newUrls[index] = value;
+    setUrls(newUrls);
+  };
+
+  const addUrlInput = () => {
+    setUrls([...urls, ""]);
+  };
+
+  const removeUrlInput = (index) => {
+    setUrls(urls.filter((_, i) => i !== index));
+  };
+
   const askQuestion = async () => {
-    if (!url || !question) return;
+    const urlArray = urls.map((u) => u.trim()).filter((u) => u);
+    if (urlArray.length === 0 || !question) return;
 
     try {
       const res = await axios.post("http://127.0.0.1:8000/api/ask/", {
-        url,
-        question
+        urls: urlArray,
+        question,
       });
       setAnswer(res.data.answer);
     } catch (err) {
@@ -25,13 +40,26 @@ function App() {
     <div style={{ padding: "40px" }}>
       <h1>YouTube AI Chatbot</h1>
 
-      <input
-        type="text"
-        placeholder="Paste YouTube URL..."
-        value={url}
-        onChange={(e) => setUrl(e.target.value)}
-        style={{ width: "400px", marginBottom: "10px" }}
-      />
+      {urls.map((url, index) => (
+        <div key={index} style={{ marginBottom: "8px" }}>
+          <input
+            type="text"
+            placeholder={`YouTube URL #${index + 1}`}
+            value={url}
+            onChange={(e) => handleUrlChange(index, e.target.value)}
+            style={{ width: "300px" }}
+          />
+          {urls.length > 1 && (
+            <button onClick={() => removeUrlInput(index)} style={{ marginLeft: "5px" }}>
+              Remove
+            </button>
+          )}
+        </div>
+      ))}
+
+      <button onClick={addUrlInput} style={{ marginBottom: "10px" }}>
+        Add another URL
+      </button>
       <br />
 
       <input
