@@ -2,7 +2,8 @@ import { useState } from "react";
 import axios from "axios";
 
 function App() {
-  const [urls, setUrls] = useState([""]); // start with one input
+  const [urls, setUrls] = useState([""]);
+  const [file, setFile] = useState(null);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
 
@@ -16,19 +17,27 @@ function App() {
     setUrls([...urls, ""]);
   };
 
-  const removeUrlInput = (index) => {
-    setUrls(urls.filter((_, i) => i !== index));
-  };
-
   const askQuestion = async () => {
-    const urlArray = urls.map((u) => u.trim()).filter((u) => u);
-    if (urlArray.length === 0 || !question) return;
+    const urlArray = urls.filter((u) => u.trim() !== "");
+
+    const formData = new FormData();
+    formData.append("question", question);
+
+    urlArray.forEach((url) => {
+      formData.append("urls", url);
+    });
+
+    if (file) {
+      formData.append("transcript_file", file);
+    }
 
     try {
-      const res = await axios.post("http://127.0.0.1:8000/api/ask/", {
-        urls: urlArray,
-        question,
-      });
+      const res = await axios.post(
+        "http://127.0.0.1:8000/api/ask/",
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
+      );
+
       setAnswer(res.data.answer);
     } catch (err) {
       console.error(err);
@@ -41,26 +50,28 @@ function App() {
       <h1>YouTube AI Chatbot</h1>
 
       {urls.map((url, index) => (
-        <div key={index} style={{ marginBottom: "8px" }}>
+        <div key={index}>
           <input
             type="text"
-            placeholder={`YouTube URL #${index + 1}`}
+            placeholder={`YouTube URL ${index + 1}`}
             value={url}
             onChange={(e) => handleUrlChange(index, e.target.value)}
-            style={{ width: "300px" }}
+            style={{ width: "350px", marginBottom: "5px" }}
           />
-          {urls.length > 1 && (
-            <button onClick={() => removeUrlInput(index)} style={{ marginLeft: "5px" }}>
-              Remove
-            </button>
-          )}
         </div>
       ))}
 
-      <button onClick={addUrlInput} style={{ marginBottom: "10px" }}>
-        Add another URL
-      </button>
-      <br />
+      <button onClick={addUrlInput}>Add URL</button>
+
+      <br /><br />
+
+      <input
+        type="file"
+        accept=".txt,.pdf"
+        onChange={(e) => setFile(e.target.files[0])}
+      />
+
+      <br /><br />
 
       <input
         type="text"
@@ -69,10 +80,10 @@ function App() {
         onChange={(e) => setQuestion(e.target.value)}
         style={{ width: "400px" }}
       />
-      <br />
-      <button onClick={askQuestion} style={{ marginTop: "10px" }}>
-        Ask
-      </button>
+
+      <br /><br />
+
+      <button onClick={askQuestion}>Ask</button>
 
       <h3>Answer:</h3>
       <p>{answer}</p>
