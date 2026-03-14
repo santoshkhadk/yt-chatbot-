@@ -6,24 +6,35 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-print(os.getenv("GROQ_API_KEY"))
 API_KEY = os.getenv("GROQ_API_KEY")
-print(API_KEY)
 
 
 @api_view(['POST'])
 def ask_question(request):
+    """
+    Request payload:
+    {
+        "urls": ["https://youtube.com/watch?v=abc", "https://youtube.com/watch?v=def"],
+        "question": "Explain Python loops"
+    }
+    Optional file: transcript_file
+    """
 
-    video_urls = request.data.getlist("urls")
+    # get list of video URLs
+    video_urls = request.data.get("urls")
+
+    # question string
     question = request.data.get("question")
-    print(API_KEY)
+
+    # transcript file if uploaded
     transcript_file = request.FILES.get("transcript_file")
 
-    answer = answer_question_multi_video(
+    # run RAG pipeline
+    result = answer_question_multi_video(
         video_urls,
         transcript_file,
         question,
         API_KEY
     )
 
-    return Response({"answer": answer})
+    return Response(result)
