@@ -8,6 +8,8 @@ from langchain_core.runnables import RunnableParallel, RunnablePassthrough, Runn
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
+from langchain_core.documents import Document
+
 
 import pdfplumber
 
@@ -22,15 +24,15 @@ def extract_video_id(url: str) -> str | None:
 
 
 # --------------------------------------
-# Fetch Transcript Safely
+# Fetch Transcript with timestamps
 # --------------------------------------
 
-def fetch_transcript_safe(video_id: str) -> str | None:
+def fetch_transcript_safe(video_id: str):
 
     for lang in ["en", "en-auto"]:
         try:
             transcript_list = YouTubeTranscriptApi().fetch(video_id, languages=[lang])
-            return " ".join([t.text for t in transcript_list])
+            return transcript_list
         except (TranscriptsDisabled, NoTranscriptFound):
             continue
         except Exception:
@@ -40,29 +42,38 @@ def fetch_transcript_safe(video_id: str) -> str | None:
 
 
 # --------------------------------------
-# Get transcripts from multiple videos
+# Convert transcripts to documents
 # --------------------------------------
 
-def get_multi_video_transcript(video_urls: list[str]) -> str:
+def get_multi_video_documents(video_urls):
 
-    transcripts = []
+    docs = []
 
-    for i, url in enumerate(video_urls):
+    for url in video_urls:
 
         video_id = extract_video_id(url)
 
         if not video_id:
-            transcripts.append(f"[Video {i+1}] Invalid URL")
             continue
 
-        text = fetch_transcript_safe(video_id)
+        transcript = fetch_transcript_safe(video_id)
 
-        if text:
-            transcripts.append(f"[Video {i+1}]\n{text}")
-        else:
-            transcripts.append(f"[Video {i+1}] Transcript not available")
+        if not transcript:
+            continue
 
-    return "\n\n".join(transcripts)
+        for t in transcript:
+
+            docs.append(
+                Document(
+                    page_content=t.text,
+                    metadata={
+                        "video_url": url,
+                        "timestamp": int(t.start)
+                    }
+                )
+            )
+
+    return docs
 
 
 # --------------------------------------
@@ -72,15 +83,18 @@ def get_multi_video_transcript(video_urls: list[str]) -> str:
 def read_uploaded_transcript(file):
 
     if not file:
-        return ""
+        return []
 
     try:
 
-        # TXT file
+        # TXT
         if file.name.endswith(".txt"):
-            return file.read().decode("utf-8")
 
-        # PDF file
+            text = file.read().decode("utf-8")
+
+            return [Document(page_content=text, metadata={"source": "uploaded"})]
+
+        # PDF
         if file.name.endswith(".pdf"):
 
             text = ""
@@ -88,54 +102,50 @@ def read_uploaded_transcript(file):
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
                     page_text = page.extract_text()
-
                     if page_text:
                         text += page_text + "\n"
 
-            return text
+            return [Document(page_content=text, metadata={"source": "uploaded"})]
 
     except Exception:
-        return ""
+        return []
 
-    return ""
+    return []
 
 
 # --------------------------------------
 # MAIN RAG PIPELINE
 # --------------------------------------
 
-def answer_question_multi_video(video_urls: list[str], transcript_file, question: str, api_key: str):
+def answer_question_multi_video(video_urls, transcript_file, question, api_key):
 
-    # 1️⃣ Get video transcripts
-    video_text = get_multi_video_transcript(video_urls)
+    # 1️⃣ Get documents from videos
+    video_docs = get_multi_video_documents(video_urls)
 
-    # 2️⃣ Get uploaded transcript
-    uploaded_text = read_uploaded_transcript(transcript_file)
+    # 2️⃣ Get uploaded transcript docs
+    uploaded_docs = read_uploaded_transcript(transcript_file)
 
-    # 3️⃣ Combine both sources
-    combined_text = video_text + "\n" + uploaded_text
+    docs = video_docs + uploaded_docs
 
-    if not combined_text.strip():
-        return "No transcript available from videos or uploaded file."
+    if not docs:
+        return {"answer": "No transcript available.", "sources": []}
 
     # --------------------------------------
 
-    # Split text
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=50
     )
 
-    chunks = splitter.split_text(combined_text)
+    split_docs = splitter.split_documents(docs)
 
     # --------------------------------------
 
-    # Embeddings + FAISS
     embedding_model = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    vector_store = FAISS.from_texts(chunks, embedding_model)
+    vector_store = FAISS.from_documents(split_docs, embedding_model)
 
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
 
@@ -144,7 +154,6 @@ def answer_question_multi_video(video_urls: list[str], transcript_file, question
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
-    # Prompt
     prompt_template = """
 Use the context below to answer the question.
 
@@ -170,12 +179,49 @@ Answer:
     # --------------------------------------
 
     parallel_chain = RunnableParallel({
-        "context": retriever | RunnableLambda(format_docs),
+        "context": retriever,
         "question": RunnablePassthrough()
     })
 
-    rag_chain = parallel_chain | PROMPT | llm | StrOutputParser()
+    rag_chain = parallel_chain | RunnableLambda(
+        lambda x: {
+            "context": format_docs(x["context"]),
+            "question": x["question"],
+            "docs": x["context"]
+        }
+    ) | RunnableLambda(
+        lambda x: {
+            "answer": (PROMPT | llm | StrOutputParser()).invoke({
+                "context": x["context"],
+                "question": x["question"]
+            }),
+            "sources": x["docs"]
+        }
+    )
 
-    answer = rag_chain.invoke(question)
+    result = rag_chain.invoke(question)
 
-    return answer
+    # --------------------------------------
+    # Extract timestamp links
+    # --------------------------------------
+
+    sources = []
+
+    for d in result["sources"]:
+
+        if "video_url" in d.metadata:
+
+            timestamp = d.metadata["timestamp"]
+            url = d.metadata["video_url"]
+
+            sources.append({
+                "text": d.page_content,
+                "timestamp": timestamp,
+                "link": f"{url}&t={timestamp}s"
+            })
+    
+
+    return {
+        "answer": result["answer"].replace("\n", " ").strip(),
+        "sources": sources
+    }
